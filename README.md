@@ -64,3 +64,5 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 ## 还原
 
 用备份文件（`*.bak_*`）或你自己的原版 exe 覆盖回去即可。
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
