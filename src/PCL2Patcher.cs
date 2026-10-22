@@ -76,12 +76,36 @@ static class Patcher
 
         mod = ModuleDefMD.Load(path);
         var ver = mod.Assembly.Version;
-        Log("版本：" + ver);
-        if (!force && !(ver.Major == 2 && ver.Minor == 13))
+        Log("AssemblyVersion：" + ver + "（PCL 正式版安装包内 exe 的 AssemblyVersion 可能低于发布号，例如 2.14.0.0 包里是 2.13.1.1）");
+
+        // 结构自检：不依赖版本号，只检查补丁需要的类型/方法是否存在
+        var missing = new List<string>();
+        foreach (var req in new string[][]
         {
-            Console.WriteLine("[提示] 该文件不是 2.13.x 版本，补丁可能不适用。加 -f 参数可强制继续。");
-            Pause();
-            return 4;
+            new string[] { "PCL.ModSecret", "ThemeCheckOne" },
+            new string[] { "PCL.ModSecret", "ThemeUnlock" },
+            new string[] { "PCL.ModSecret", "get_CurrentRank" },
+            new string[] { "PCL.ModSecret", "ThemeRefresh" },
+            new string[] { "PCL.ModSecret", "ServerSub" },
+            new string[] { "PCL.ModSecret", "UpdateStart" },
+            new string[] { "PCL.ModSecret", "DownloadLatestPCL" },
+            new string[] { "PCL.ModSecret", "UpdateCheckByButton" },
+            new string[] { "PCL.PageSetupUI", "PageSetupUI_Loaded" }
+        })
+        {
+            var t = mod.Find(req[0], false);
+            if (t == null || t.FindMethod(req[1]) == null) missing.Add(req[0] + "::" + req[1]);
+        }
+        if (missing.Count > 0)
+        {
+            Console.WriteLine("[提示] 目标文件缺少以下补丁锚点，可能不是受支持的 PCL 版本：");
+            foreach (var x in missing) Console.WriteLine("        " + x);
+            if (!force)
+            {
+                Console.WriteLine("加 -f 参数可强制继续（缺失的点会自动跳过）。");
+                Pause();
+                return 4;
+            }
         }
 
         // already patched?
@@ -99,15 +123,18 @@ static class Patcher
         Log("已备份：" + bak);
 
         Log("");
-        StubBool("PCL.ModSecret", "ThemeCheckOne", true);
-        StubBool("PCL.ModSecret", "ThemeUnlock", true);
-        StubRank();
-        UnlockThemeUi();
-        HideDonateOverlay();
-        FixThemeRefreshArg();
-        InjectThemeColorTable();
-        RemoveUpdate();
-        TruncateAt("PCL.ModSecret", "ServerSub", 0x00F2);
+        Step("解锁主题校验", delegate
+        {
+            StubBool("PCL.ModSecret", "ThemeCheckOne", true);
+            StubBool("PCL.ModSecret", "ThemeUnlock", true);
+            StubRank();
+        });
+        Step("启用主题入口", delegate { UnlockThemeUi(); });
+        Step("移除赞助灰罩", delegate { HideDonateOverlay(); });
+        Step("修复主题参数", delegate { FixThemeRefreshArg(); });
+        Step("注入配色与渐变表", delegate { InjectThemeColorTable(); });
+        Step("移除自动更新", delegate { RemoveUpdate(); });
+        Step("移除公告拉取", delegate { TruncateServerSub(); });
 
         string tmp = path + ".tmp";
         mod.Write(tmp);
@@ -138,6 +165,88 @@ static class Patcher
     static void Pause()
     {
         try { Console.ReadKey(true); } catch { }
+    }
+
+    static bool IsPushOnly(OpCode op)
+    {
+        switch (op.Code)
+        {
+            case Code.Ldarg_0: case Code.Ldarg_1: case Code.Ldarg_2: case Code.Ldarg_3:
+            case Code.Ldarg_S: case Code.Ldarg:
+            case Code.Ldloc_0: case Code.Ldloc_1: case Code.Ldloc_2: case Code.Ldloc_3:
+            case Code.Ldloc_S: case Code.Ldloc:
+            case Code.Ldc_I4: case Code.Ldc_I4_S: case Code.Ldc_I4_0: case Code.Ldc_I4_1:
+            case Code.Ldc_I4_2: case Code.Ldc_I4_3: case Code.Ldc_I4_4: case Code.Ldc_I4_5:
+            case Code.Ldc_I4_6: case Code.Ldc_I4_7: case Code.Ldc_I4_8: case Code.Ldc_I4_M1:
+            case Code.Ldc_I8: case Code.Ldc_R4: case Code.Ldc_R8:
+            case Code.Ldsfld: case Code.Ldstr: case Code.Ldnull:
+                return true;
+        }
+        return false;
+    }
+
+    static void Step(string name, Action a)
+    {
+        try { a(); }
+        catch (Exception ex) { Console.WriteLine("  ! 跳过 " + name + "：" + ex.Message); }
+    }
+
+    // 截断到本地缓存读取之后（按结构定位，不写死偏移）
+    static void TruncateServerSub()
+    {
+        var m = M("PCL.ModSecret", "ServerSub");
+        var ins = m.Body.Instructions;
+        int anchor = -1;
+        for (int i = 0; i < ins.Count; i++)
+        {
+            var f = ins[i].Operand as IField;
+            if (ins[i].OpCode.Code == Code.Stsfld && f != null && f.Name == "ServerConfig") { anchor = i; break; }
+        }
+        if (anchor < 0) throw new Exception("找不到 ServerConfig 缓存读取点");
+        int cut = -1;
+        for (int i = anchor; i < ins.Count; i++)
+        {
+            var im = ins[i].Operand as IMethod;
+            if (im != null && im.Name == "set_Progress" && im.DeclaringType != null && im.DeclaringType.FullName.Contains("LoaderBase"))
+            { cut = i; break; }
+        }
+        if (cut < 0) throw new Exception("找不到公告拉取起始点");
+        // 回退到这条语句的起始处，避免把压栈指令留在截断点之前
+        int j = cut - 1;
+        while (j >= 0 && IsPushOnly(ins[j].OpCode)) j--;
+        TruncateAtIndex(m, j + 1);
+    }
+
+    static void TruncateAtIndex(MethodDef m, int idx)
+    {
+        var body = m.Body;
+        var ret = Instruction.Create(OpCodes.Ret);
+        while (body.Instructions.Count > idx) body.Instructions.RemoveAt(idx);
+        body.Instructions.Add(ret);
+
+        for (int i = 0; i < body.Instructions.Count; i++)
+        {
+            var ins = body.Instructions[i];
+            var tgt = ins.Operand as Instruction;
+            if (tgt != null && !body.Instructions.Contains(tgt)) ins.Operand = ret;
+            var tgts = ins.Operand as Instruction[];
+            if (tgts != null)
+                for (int k = 0; k < tgts.Length; k++)
+                    if (!body.Instructions.Contains(tgts[k])) tgts[k] = ret;
+        }
+
+        for (int i = body.ExceptionHandlers.Count - 1; i >= 0; i--)
+        {
+            var eh = body.ExceptionHandlers[i];
+            if (eh.TryStart == null || !body.Instructions.Contains(eh.TryStart) ||
+                eh.HandlerStart == null || !body.Instructions.Contains(eh.HandlerStart))
+            { body.ExceptionHandlers.RemoveAt(i); continue; }
+            if (eh.TryEnd != null && !body.Instructions.Contains(eh.TryEnd)) eh.TryEnd = ret;
+            if (eh.HandlerEnd != null && !body.Instructions.Contains(eh.HandlerEnd)) eh.HandlerEnd = ret;
+            if (eh.FilterStart != null && !body.Instructions.Contains(eh.FilterStart)) eh.FilterStart = ret;
+        }
+        body.UpdateInstructionOffsets();
+        Log("  · ServerSub 截断（移除公告/配置联网拉取）");
     }
 
     // ---------- helpers ----------
@@ -381,6 +490,18 @@ static class Patcher
         var fThemeNow = type.FindField("ThemeNow");
         if (fHue == null || fSat == null || fLight == null || fDelta == null || fThemeNow == null)
             throw new Exception("主题颜色字段缺失");
+
+        // 目标已自带每主题色表（例如后续正式版）时不再注入：
+        // 用「常量 -> stsfld ColorHue」的成对出现次数判断，原版只有默认值 210 这一处
+        int hueConstants = 0;
+        var ins0 = m.Body.Instructions;
+        for (int i0 = 1; i0 < ins0.Count; i0++)
+        {
+            var f0 = ins0[i0].Operand as IField;
+            if (ins0[i0].OpCode.Code == Code.Stsfld && f0 != null && f0.Name == "ColorHue" && ins0[i0 - 1].OpCode.Code == Code.Ldc_I4)
+                hueConstants++;
+        }
+        if (hueConstants > 1) { Log("  · 目标已自带配色表，跳过注入"); return; }
 
         IMethod opInt = null;
         foreach (var t in mod.GetTypes())
