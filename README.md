@@ -38,6 +38,22 @@ PCL2Patcher.exe "D:\某个目录\Plain Craft Launcher 2.exe"
 
 原版为 2.13.1.1 (408)，未签名；补丁后的 exe 同样是未签名文件。
 
+## 源码
+
+补丁器源码在 [`src/`](src)：
+
+| 文件 | 说明 |
+|---|---|
+| `src/PCL2Patcher.cs` | 全部补丁逻辑：11 处 IL 改动、每主题配色表、标题栏渐变表 |
+| `src/Bootstrap.cs` | 启动引导，把内嵌的 dnlib.dll 交给运行时加载 |
+| `src/build.ps1` | 编译脚本 |
+
+编译方式：把 `dnlib.dll`（NuGet 包 `dnlib` 4.4.0 里的 `lib/net45/dnlib.dll`）放进 `src/`，然后执行
+
+```
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
+
 ## 说明
 
 - 只改了 11 处 IL，其余字节与原版一致；内嵌的依赖程序集（MeloongCore / PCLCS 等）完全未改动
