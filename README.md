@@ -1,3 +1,5 @@
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
+
 # PCL2 主题解锁
 
 基于 **PCL2 2.13.1.1（正式版 408）**：解锁全部启动器主题，关闭自动更新与公告拉取。
@@ -64,5 +66,3 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 ## 还原
 
 用备份文件（`*.bak_*`）或你自己的原版 exe 覆盖回去即可。
-
-[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
